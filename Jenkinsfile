@@ -340,7 +340,6 @@ pipeline {
                         echo "🚀 Submitting job to Dataproc..."
                         echo ""
                         
-                        # Create a simple PySpark line counter script
                         cat > /tmp/line_counter_job.py << 'PYSPARK_SCRIPT'
 from pyspark import SparkContext
 import sys
@@ -355,37 +354,25 @@ if __name__ == "__main__":
     
     sc = SparkContext(appName="Repository File Line Counter")
     
-    # Read all files from input path (not just Python files)
-    # Use glob pattern to ensure all files are read recursively
-    # wholeTextFiles with **/* pattern reads all files recursively
-    files_rdd = sc.wholeTextFiles(input_path + "/**/*")
+    # Read root-level and subdirectory files, then union
+    root_files = sc.wholeTextFiles(input_path + "/*")
+    subdir_files = sc.wholeTextFiles(input_path + "/**/*")
+    files_rdd = root_files.union(subdir_files).distinct()
     
-    # Extract filename and count lines per file
     def process_file(file_tuple):
         filepath, content = file_tuple
-        # Extract relative path from input_path to preserve directory structure
-        # For GCS paths, extract the part after repo-code/
         if 'repo-code/' in filepath:
             relative_path = filepath.split('repo-code/')[-1]
         else:
             relative_path = filepath.split('/')[-1]
-        # Count lines (split by actual newline character)
-        # Use splitlines() which handles all line ending types
         line_count = len(content.splitlines())
         return (relative_path, line_count)
     
-    # Map to get (filepath, line_count) pairs
-    line_counts = files_rdd.map(process_file)
-    
-    # Don't reduce - keep all files even if they have the same name in different directories
-    # This preserves the full file structure
-    
-    # Format output as "filename": count
     def format_output(filename_count):
         filename, count = filename_count
         return f'"{filename}": {count}'
     
-    # Sort by filename, format, and save
+    line_counts = files_rdd.map(process_file)
     sorted_counts = line_counts.sortByKey()
     formatted_output = sorted_counts.map(format_output)
     formatted_output.saveAsTextFile(output_path)
@@ -393,10 +380,8 @@ if __name__ == "__main__":
     sc.stop()
 PYSPARK_SCRIPT
                         
-                        # Upload the job script to GCS
                         gcloud storage cp /tmp/line_counter_job.py gs://${STAGING_BUCKET}/jobs/line_counter_job.py
                         
-                        # Submit the PySpark job to Dataproc (uses Workload Identity automatically)
                         gcloud dataproc jobs submit pyspark \\
                             gs://${STAGING_BUCKET}/jobs/line_counter_job.py \\
                             --cluster=${HADOOP_CLUSTER_NAME} \\

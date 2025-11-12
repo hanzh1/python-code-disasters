@@ -1,36 +1,5 @@
 # python-code-disasters
 
-## Project Overview
-
-This repository contains examples of Python code that demonstrate various anti-patterns and code quality issues. Additionally, this repository has been configured with a complete CI/CD pipeline that demonstrates:
-
-- **Jenkins** and **SonarQube** integration for static code analysis
-- **Hadoop MapReduce** job execution based on code quality gates
-- **Terraform** infrastructure as code for cloud deployment
-- **GKE** (Google Kubernetes Engine) for container orchestration
-- **Dataproc** for Hadoop cluster management
-
-## CI/CD Pipeline Architecture
-
-The pipeline implements the following workflow:
-
-1. **Code Change Detection**: GitHub webhook triggers Jenkins on code commits
-2. **Static Code Analysis**: SonarQube analyzes the code for quality issues
-3. **Quality Gate Check**: Pipeline checks for blocker issues and quality gate status
-4. **Conditional Hadoop Execution**: 
-   - ✅ If no blocker issues → Run Hadoop MapReduce job
-   - ❌ If blocker issues found → Skip Hadoop job
-5. **Results Display**: Hadoop job results are displayed and stored in GCS
-
-### Infrastructure Components
-
-- **Jenkins & SonarQube**: Deployed on GKE cluster
-- **Hadoop Cluster**: Deployed on Dataproc (1 master, 2 workers)
-- **Storage**: GCS buckets for staging and output
-- **Authentication**: Workload Identity for secure GCP access
-
----
-
 ## Prerequisites
 
 Before deploying, ensure you have:
