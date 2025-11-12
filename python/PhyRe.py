@@ -137,7 +137,7 @@ for i in open(samplefile):
     elif match('Coefficients:', i):
         x = i.split()
         x.remove('Coefficients:')
-        x = map(eval, x)
+        x = list(map(eval, x))  # Convert to list for Python 3 compatibility
         
         for t in taxon:
             i = taxon.index(t)
@@ -170,7 +170,7 @@ for i in open(popfile):
     elif match('Coefficients:', i):
         x = i.split()
         x.remove('Coefficients:')
-        x = map(eval, x)
+        x = list(map(eval, x))  # Convert to list for Python 3 compatibility
         
         for t in taxon:
             i = taxon.index(t)

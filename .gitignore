@@ -99,3 +99,17 @@ docs/_build/
 # PyBuilder
 target/
 
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate*
+*.tfplan
+
+# Temporary files
+*.tmp
+*.log
+urls.txt
+outputs.txt
+
+# OS files
+.DS_Store

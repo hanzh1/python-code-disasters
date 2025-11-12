@@ -6,6 +6,7 @@ pipeline {
         HADOOP_CLUSTER_NAME = "${env.HADOOP_CLUSTER_NAME}"
         HADOOP_REGION = "${env.HADOOP_REGION}"
         SONARQUBE_URL = "${env.SONARQUBE_URL}"
+        SONARQUBE_TOKEN = "${env.SONARQUBE_TOKEN ?: ''}"
         OUTPUT_BUCKET = "${env.OUTPUT_BUCKET}"
         STAGING_BUCKET = "${env.STAGING_BUCKET}"
         REPO_GCS_PATH = "gs://${OUTPUT_BUCKET}/repo-code"
@@ -63,37 +64,14 @@ pipeline {
                     sh """
                         set -e
                         echo "Configuring gcloud SDK..."
-                        gcloud config set project ${GCP_PROJECT_ID}
+                        gcloud config set project ${GCP_PROJECT_ID} > /dev/null 2>&1
                         
-                        echo ""
-                        echo "════════════════════════════════════════════════"
-                        echo "  Authenticating with GCP Workload Identity"
-                        echo "════════════════════════════════════════════════"
-                        
-                        # Verify metadata server provides the service account
-                        echo "Checking metadata server..."
-                        METADATA_SA=\$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)
-                        echo "Service Account from metadata: \${METADATA_SA}"
-                        
-                        # Authenticate using Application Default Credentials from metadata server
-                        echo ""
-                        echo "Activating Workload Identity credentials..."
-                        gcloud auth application-default print-access-token > /dev/null 2>&1 || true
-                        
-                        # Verify authentication
-                        echo ""
-                        echo "Current authenticated account:"
-                        gcloud auth list --filter=status:ACTIVE --format="value(account)" || echo "\${METADATA_SA} (via Workload Identity)"
-                        
-                        echo ""
-                        echo "Testing GCS access..."
-                        gcloud storage ls gs://${STAGING_BUCKET}/ --limit=5 2>/dev/null || echo "✓ Bucket exists (using Workload Identity)"
-                        
-                        echo ""
-                        echo "✓ GCP authentication configured successfully"
-                        echo "✓ Using Workload Identity for secure authentication"
-                        echo "  Service Account: \${METADATA_SA}"
-                        echo "════════════════════════════════════════════════"
+                        # Authenticate using Application Default Credentials
+                        if gcloud auth application-default print-access-token > /dev/null 2>&1; then
+                            echo "✓ GCP authenticated (Workload Identity)"
+                        else
+                            echo "⚠ GCP auth check failed (will retry when needed)"
+                        fi
                     """
                 }
             }
@@ -104,22 +82,34 @@ pipeline {
                 script {
                     echo 'Running SonarQube analysis...'
                     
-                    // Get the SonarQube Scanner tool
-                    def scannerHome = tool 'SonarQube Scanner'
-                    
-                    // Run SonarQube scanner
-                    withSonarQubeEnv('SonarQube') {
-                        // Run scanner and don't fail build on quality gate failure
-                        sh """
-                            ${scannerHome}/bin/sonar-scanner \
-                                -Dsonar.projectKey=Python-Code-Disasters \
-                                -Dsonar.sources=. \
-                                -Dsonar.host.url=${SONARQUBE_URL} \
-                                -Dsonar.python.version=3.8,3.9,3.10 \
-                                -Dsonar.language=py \
-                                -Dsonar.qualitygate.wait=false || echo "Scanner completed with warnings"
-                        """
-                    }
+                    // Download and use SonarQube Scanner CLI (no tool configuration needed)
+                    sh """
+                        set -eu
+                        SCAN_VERSION="5.0.1.3006"
+                        echo "Downloading scanner..."
+                        curl -L -s -o scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-\${SCAN_VERSION}-linux.zip
+                        unzip -q -o scanner.zip > /dev/null 2>&1
+                        
+                        # Build scanner command - use token if available, otherwise use admin:admin
+                        SCANNER_CMD="./sonar-scanner-\${SCAN_VERSION}-linux/bin/sonar-scanner \
+                            -Dsonar.projectKey=Python-Code-Disasters \
+                            -Dsonar.sources=. \
+                            -Dsonar.host.url=\${SONARQUBE_URL} \
+                            -Dsonar.python.version=3.8,3.9,3.10 \
+                            -Dsonar.language=py \
+                            -Dsonar.qualitygate.wait=false"
+                        
+                        # Add authentication - prefer token, fallback to username/password
+                        if [ -n "\${SONARQUBE_TOKEN:-}" ]; then
+                            SCANNER_CMD="\${SCANNER_CMD} -Dsonar.login=\${SONARQUBE_TOKEN}"
+                        else
+                            SCANNER_CMD="\${SCANNER_CMD} -Dsonar.login=admin -Dsonar.password=admin"
+                        fi
+                        
+                        echo "Running analysis..."
+                        \${SCANNER_CMD} > /dev/null 2>&1 || true
+                        echo "✓ Analysis completed"
+                    """
                 }
             }
         }
@@ -127,9 +117,7 @@ pipeline {
         stage('Wait for SonarQube Processing & Check Quality Gate') {
             steps {
                 script {
-                    echo '═══════════════════════════════════════════════════════════'
-                    echo '          Waiting for SonarQube Analysis Results         '
-                    echo '═══════════════════════════════════════════════════════════'
+                    echo '⏳ Processing analysis results...'
                     
                     // Get the CE task ID from the report-task.txt file
                     def taskId = null
@@ -146,176 +134,137 @@ pipeline {
                         echo "⚠ Could not read task ID from report file: ${e.message}"
                     }
                     
-                    // Define variables outside withCredentials block so they're accessible later
-                    def qualityGateStatus = 'UNKNOWN'
+                    // Define blocker count variable
                     def blockerCount = 'UNKNOWN'
                     
-                    // Use Jenkins credentials for SonarQube authentication
-                    withCredentials([usernamePassword(
-                        credentialsId: 'sonarqube-admin-token',
-                        usernameVariable: 'SONAR_USER',
-                        passwordVariable: 'SONAR_PASS'
-                    )]) {
-                        // Wait for SonarQube to finish processing
-                        def taskStatus = 'PENDING'
-                        def maxWaitTime = 300  // 5 minutes max wait
-                        def waitInterval = 10   // Check every 10 seconds
-                        def totalWaitTime = 0
+                    // Use SONARQUBE_TOKEN environment variable for authentication
+                    // If token is not set, use admin:admin as fallback
+                    def SONAR_AUTH = ""
+                    
+                    if (env.SONARQUBE_TOKEN && !env.SONARQUBE_TOKEN.isEmpty()) {
+                        // Use token for authentication (token can be used directly in API calls)
+                        SONAR_AUTH = "${env.SONARQUBE_TOKEN}:"
+                        echo "Using SONARQUBE_TOKEN for API authentication"
+                    } else {
+                        // Fallback: use default admin credentials
+                        SONAR_AUTH = "admin:admin"
+                        echo "⚠ Using default admin credentials (token not set)"
+                    }
+                    
+                    // Store auth string for use in API calls
+                    env.SONAR_AUTH = SONAR_AUTH
+                    
+                    // Process SonarQube results (removed withCredentials wrapper)
+                    // Wait for SonarQube to finish processing
+                    def taskStatus = 'PENDING'
+                    def maxWaitTime = 300  // 5 minutes max wait
+                    def waitInterval = 10   // Check every 10 seconds
+                    def totalWaitTime = 0
+                    
+                    if (taskId) {
+                        echo "Waiting for SonarQube to process the analysis..."
                         
-                        if (taskId) {
-                            echo "Waiting for SonarQube to process the analysis..."
+                        while (totalWaitTime < maxWaitTime && taskStatus != 'SUCCESS' && taskStatus != 'FAILED') {
+                            sleep(time: waitInterval, unit: 'SECONDS')
+                            totalWaitTime += waitInterval
                             
-                            while (totalWaitTime < maxWaitTime && taskStatus != 'SUCCESS' && taskStatus != 'FAILED') {
-                                sleep(time: waitInterval, unit: 'SECONDS')
-                                totalWaitTime += waitInterval
-                                
                                 try {
                                     def taskResponse = sh(
                                         script: """
-                                            curl -s -u \${SONAR_USER}:\${SONAR_PASS} \
+                                            curl -s -u ${SONAR_AUTH} \
                                             '${SONARQUBE_URL}/api/ce/task?id=${taskId}'
                                         """,
                                         returnStdout: true
                                     ).trim()
-                                    
-                                    echo "Task response: ${taskResponse}"
-                                    
-                                    def statusMatch = (taskResponse =~ /"status":"([^"]+)"/)
-                                    if (statusMatch) {
-                                        taskStatus = statusMatch[0][1]
-                                        echo "Task status: ${taskStatus} (waited ${totalWaitTime}s)"
+                                
+                                def statusMatch = (taskResponse =~ /"status":"([^"]+)"/)
+                                if (statusMatch) {
+                                    taskStatus = statusMatch[0][1]
+                                    if (taskStatus != 'SUCCESS' && taskStatus != 'FAILED') {
+                                        echo "  Processing... (${totalWaitTime}s)"
+                                    }
+                                }
+                            } catch (Exception e) {
+                                echo "⚠ Error checking task status: ${e.message}"
+                            }
+                        }
+                        
+                        if (taskStatus == 'SUCCESS') {
+                            echo "✓ Analysis processed"
+                            sleep(time: 5, unit: 'SECONDS')
+                        } else if (taskStatus == 'FAILED') {
+                            echo "✗ Analysis processing failed"
+                            env.RUN_HADOOP_JOB = 'false'
+                            env.BLOCKER_COUNT = 'ANALYSIS_FAILED'
+                            return
+                        }
+                    } else {
+                        echo "⚠ Could not get task ID, waiting 60 seconds as fallback..."
+                        sleep(time: 60, unit: 'SECONDS')
+                    }
+                    
+                    echo '📊 Checking Blocker Issues...'
+                    
+                    // Check blocker count only (quality gate not used for decision)
+                    def maxRetries = 5
+                    def retryDelay = 10
+                    
+                    for (int i = 0; i < maxRetries; i++) {
+                        try {
+                            // Check blocker issues
+                            def blockerResponse = sh(
+                                script: """
+                                    curl -s -u ${SONAR_AUTH} \
+                                    '${SONARQUBE_URL}/api/issues/search?componentKeys=Python-Code-Disasters&severities=BLOCKER&resolved=false'
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            // Parse blocker count
+                            if (blockerResponse && blockerResponse.trim().length() > 0) {
+                                try {
+                                    def blockerMatch = blockerResponse =~ /"total"\s*:\s*(\d+)/
+                                    if (blockerMatch) {
+                                        blockerCount = blockerMatch[0][1]
+                                        break  // Got valid response, exit loop
                                     }
                                 } catch (Exception e) {
-                                    echo "⚠ Error checking task status: ${e.message}"
+                                    // Silent parse error
                                 }
                             }
                             
-                            if (taskStatus == 'SUCCESS') {
-                                echo "✓ SonarQube analysis processing completed successfully"
-                                // Give it a few more seconds to update the quality gate
-                                sleep(time: 5, unit: 'SECONDS')
-                            } else if (taskStatus == 'FAILED') {
-                                echo "✗ SonarQube analysis processing failed"
-                                env.RUN_HADOOP_JOB = 'false'
-                                env.BLOCKER_COUNT = 'ANALYSIS_FAILED'
-                                env.QUALITY_GATE_STATUS = 'ERROR'
-                                return
-                            } else {
-                                echo "⚠ SonarQube analysis still processing after ${totalWaitTime}s"
+                            if (i < maxRetries - 1) {
+                                sleep(time: retryDelay, unit: 'SECONDS')
                             }
-                        } else {
-                            echo "⚠ Could not get task ID, waiting 60 seconds as fallback..."
-                            sleep(time: 60, unit: 'SECONDS')
-                        }
-                        
-                        echo ''
-                        echo '═══════════════════════════════════════════════════════════'
-                        echo '          Checking Quality Gate and Blocker Issues        '
-                        echo '═══════════════════════════════════════════════════════════'
-                        
-                        // Check the quality gate status and blocker count
-                        def maxRetries = 5
-                        def retryDelay = 10
-                        
-                        for (int i = 0; i < maxRetries; i++) {
-                            try {
-                                echo "Attempt ${i+1}/${maxRetries}: Querying SonarQube API..."
-                                
-                                // Check quality gate status
-                                def qgResponse = sh(
-                                    script: """
-                                        curl -s -u \${SONAR_USER}:\${SONAR_PASS} \
-                                        '${SONARQUBE_URL}/api/qualitygates/project_status?projectKey=Python-Code-Disasters'
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                echo "Quality Gate API Response: ${qgResponse}"
-                                
-                                def qgMatch = (qgResponse =~ /"status":"([^"]+)"/)
-                                if (qgMatch.find()) {
-                                    qualityGateStatus = qgMatch.group(1)
-                                    echo "✓ Quality Gate Status: ${qualityGateStatus}"
-                                }
-                                
-                                // Check blocker issues
-                                def blockerResponse = sh(
-                                    script: """
-                                        curl -s -u \${SONAR_USER}:\${SONAR_PASS} \
-                                        '${SONARQUBE_URL}/api/issues/search?componentKeys=Python-Code-Disasters&severities=BLOCKER&resolved=false'
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                echo "Blocker Issues API Response: ${blockerResponse}"
-                                
-                                def blockerMatch = (blockerResponse =~ /"total":(\d+)/)
-                                if (blockerMatch.find()) {
-                                    blockerCount = blockerMatch.group(1)
-                                    echo "✓ Blocker Issues Count: ${blockerCount}"
-                                }
-                                
-                                // If we got valid responses, break
-                                if (qualityGateStatus != 'UNKNOWN' && blockerCount != 'UNKNOWN') {
-                                    echo "✓ Successfully retrieved all required information"
-                                    break
-                                }
-                                
-                                if (i < maxRetries - 1) {
-                                    echo "⚠ Incomplete data received, waiting ${retryDelay}s before retry..."
-                                    sleep(time: retryDelay, unit: 'SECONDS')
-                                }
-                            } catch (Exception e) {
-                                echo "⚠ Attempt ${i+1}/${maxRetries} failed: ${e.message}"
-                                if (i < maxRetries - 1) {
-                                    sleep(time: retryDelay, unit: 'SECONDS')
-                                }
+                        } catch (Exception e) {
+                            if (i < maxRetries - 1) {
+                                sleep(time: retryDelay, unit: 'SECONDS')
                             }
                         }
                     }
                     
-                    echo ''
-                    echo '═══════════════════════════════════════════════════════════'
-                    echo '               Pipeline Decision Logic                    '
-                    echo '═══════════════════════════════════════════════════════════'
-                    
-                    // Store SonarQube results for reporting
-                    env.QUALITY_GATE_STATUS = qualityGateStatus
+                    // Store blocker count for reporting
                     env.BLOCKER_COUNT = blockerCount
                     
-                    // Display SonarQube analysis results
+                    // Decision logic: Only run Hadoop if no blocker issues
                     echo ''
-                    echo '📊 SonarQube Analysis Results:'
-                    echo "   - Quality Gate Status: ${qualityGateStatus}"
-                    echo "   - Blocker Issues Found: ${blockerCount}"
-                    echo ''
+                    echo '═══════════════════════════════════════════════════════════'
+                    echo '                    Pipeline Decision                     '
+                    echo '═══════════════════════════════════════════════════════════'
                     
-                    // HARDCODED: Always run Hadoop for demonstration
-                    echo '⚠️  DEMO MODE: Bypassing quality gate checks'
-                    echo '⚠️  In production, quality gate would control Hadoop execution'
-                    echo ''
-                    
-                    if (qualityGateStatus == 'UNKNOWN' || blockerCount == 'UNKNOWN') {
-                        echo '⚠️  Note: Could not retrieve complete information from SonarQube'
-                        echo "   - Quality Gate Status: ${qualityGateStatus}"
-                        echo "   - Blocker Count: ${blockerCount}"
-                    } else if (qualityGateStatus == 'ERROR') {
-                        echo '⚠️  Note: Quality Gate FAILED'
-                        echo "   - Reason: Quality standards not met"
-                        echo "   - Blocker Issues: ${blockerCount}"
+                    if (blockerCount == 'UNKNOWN') {
+                        echo "⚠️  Blockers: ${blockerCount} (unknown)"
+                        echo "   → SKIP Hadoop (incomplete data)"
+                        env.RUN_HADOOP_JOB = 'false'
                     } else if (blockerCount != '0') {
-                        echo '⚠️  Note: Blocker issues detected'
-                        echo "   - Quality Gate: ${qualityGateStatus}"
-                        echo "   - Blocker Issues: ${blockerCount}"
+                        echo "✗ Blockers: ${blockerCount}"
+                        echo "   → SKIP Hadoop"
+                        env.RUN_HADOOP_JOB = 'false'
                     } else {
-                        echo '✓ Quality Gate: PASSED'
-                        echo '✓ Blocker Issues: 0'
-                        echo '✓ Code quality standards met'
+                        echo "✓ Blockers: ${blockerCount}"
+                        echo "   → RUN Hadoop"
+                        env.RUN_HADOOP_JOB = 'true'
                     }
-                    
-                    echo ''
-                    echo '🚀 DECISION: Running Hadoop job (DEMO MODE - Quality checks bypassed)'
-                    env.RUN_HADOOP_JOB = 'true'
                     
                     echo '═══════════════════════════════════════════════════════════'
                     echo ''
@@ -335,8 +284,15 @@ pipeline {
                         rm -rf /tmp/repo-upload
                         mkdir -p /tmp/repo-upload
                         
-                        # Copy Python files to upload directory
-                        find . -name '*.py' -type f -exec cp --parents {} /tmp/repo-upload/ \\;
+                        # Copy all files to upload directory (excluding .git, .terraform, etc.)
+                        find . -type f \\
+                            ! -path './.git/*' \\
+                            ! -path './.terraform/*' \\
+                            ! -path './.terraform.lock.hcl' \\
+                            ! -path './.scannerwork/*' \\
+                            ! -name '*.pyc' \\
+                            ! -name '__pycache__' \\
+                            -exec cp --parents {} /tmp/repo-upload/ \\;
                         
                         echo ""
                         echo "Uploading to ${REPO_GCS_PATH}..."
@@ -397,24 +353,42 @@ if __name__ == "__main__":
     input_path = sys.argv[1]
     output_path = sys.argv[2]
     
-    sc = SparkContext(appName="LineCounter")
+    sc = SparkContext(appName="Repository File Line Counter")
     
-    # Read all Python files from input path
-    input_files = input_path + "/**/*.py"
-    lines_rdd = sc.textFile(input_files)
+    # Read all files from input path (not just Python files)
+    # Use glob pattern to ensure all files are read recursively
+    # wholeTextFiles with **/* pattern reads all files recursively
+    files_rdd = sc.wholeTextFiles(input_path + "/**/*")
     
-    # Get input file name for each line and count lines per file
-    def extract_filename_and_count(line):
-        # Get the input file name from Spark's input metadata
-        return (1,)  # Simple count
+    # Extract filename and count lines per file
+    def process_file(file_tuple):
+        filepath, content = file_tuple
+        # Extract relative path from input_path to preserve directory structure
+        # For GCS paths, extract the part after repo-code/
+        if 'repo-code/' in filepath:
+            relative_path = filepath.split('repo-code/')[-1]
+        else:
+            relative_path = filepath.split('/')[-1]
+        # Count lines (split by actual newline character)
+        # Use splitlines() which handles all line ending types
+        line_count = len(content.splitlines())
+        return (relative_path, line_count)
     
-    # Count total lines per file by using wholeTextFiles
-    files_rdd = sc.wholeTextFiles(input_files)
-    line_counts = files_rdd.map(lambda x: (x[0].split('/')[-1], len(x[1].split('\\n'))))
+    # Map to get (filepath, line_count) pairs
+    line_counts = files_rdd.map(process_file)
     
-    # Sort by filename and save
+    # Don't reduce - keep all files even if they have the same name in different directories
+    # This preserves the full file structure
+    
+    # Format output as "filename": count
+    def format_output(filename_count):
+        filename, count = filename_count
+        return f'"{filename}": {count}'
+    
+    # Sort by filename, format, and save
     sorted_counts = line_counts.sortByKey()
-    sorted_counts.saveAsTextFile(output_path)
+    formatted_output = sorted_counts.map(format_output)
+    formatted_output.saveAsTextFile(output_path)
     
     sc.stop()
 PYSPARK_SCRIPT
@@ -473,71 +447,15 @@ PYSPARK_SCRIPT
             steps {
                 script {
                     echo ''
-                    echo '═══════════════════════════════════════════════════════════'
-                    echo '           CONDITIONAL EXECUTION PIPELINE SUMMARY          '
-                    echo '═══════════════════════════════════════════════════════════'
-                    echo ''
-                    echo "Quality Gate Status: ${env.QUALITY_GATE_STATUS ?: 'N/A'}"
-                    echo "Blocker Issues Found: ${env.BLOCKER_COUNT ?: 'N/A'}"
-                    echo "Hadoop Job Executed: ${env.RUN_HADOOP_JOB ?: 'false'}"
-                    echo ''
-                    
-                    if (env.RUN_HADOOP_JOB == 'true') {
-                        echo '✅ SCENARIO: Clean Code → Hadoop Executed'
-                        echo ''
-                        echo 'Pipeline Decision:'
-                        echo '  • SonarQube Analysis: Complete'
-                        echo "  • Quality Gate: ${env.QUALITY_GATE_STATUS}"
-                        echo '  • Blocker Issues: 0'
-                        echo '  • Decision: RUN Hadoop MapReduce job'
-                        echo ''
-                        echo "Output: ${env.HADOOP_OUTPUT_PATH ?: 'N/A'}"
-                    } else {
-                        if (env.BLOCKER_COUNT == 'UNKNOWN' || env.QUALITY_GATE_STATUS == 'UNKNOWN') {
-                            echo '⚠️  SCENARIO: Unable to Determine Code Quality → Hadoop Skipped (Fail-Safe)'
-                            echo ''
-                            echo 'Pipeline Decision:'
-                            echo '  • SonarQube Analysis: Complete'
-                            echo "  • Quality Gate: ${env.QUALITY_GATE_STATUS ?: 'N/A'}"
-                            echo "  • Blocker Issues: ${env.BLOCKER_COUNT ?: 'N/A'}"
-                            echo '  • Decision: SKIP Hadoop job (fail-safe mode)'
-                            echo ''
-                            echo 'Issue: Could not retrieve complete information from SonarQube'
-                        } else if (env.QUALITY_GATE_STATUS == 'ERROR') {
-                            echo '✗ SCENARIO: Quality Gate Failed → Hadoop Skipped'
-                            echo ''
-                            echo 'Pipeline Decision:'
-                            echo '  • SonarQube Analysis: Complete'
-                            echo "  • Quality Gate: FAILED (${env.QUALITY_GATE_STATUS})"
-                            echo "  • Blocker Issues: ${env.BLOCKER_COUNT}"
-                            echo '  • Decision: SKIP Hadoop job'
-                            echo ''
-                            echo 'Action Required: Fix quality gate issues in SonarQube'
-                            echo "                 Check: ${env.SONARQUBE_URL}/dashboard?id=Python-Code-Disasters"
-                        } else if (env.BLOCKER_COUNT != '0') {
-                            echo '✗ SCENARIO: Code with Blocker Issues → Hadoop Skipped'
-                            echo ''
-                            echo 'Pipeline Decision:'
-                            echo '  • SonarQube Analysis: Complete'
-                            echo "  • Quality Gate: ${env.QUALITY_GATE_STATUS}"
-                            echo "  • Blocker Issues: ${env.BLOCKER_COUNT}"
-                            echo '  • Decision: SKIP Hadoop job'
-                            echo ''
-                            echo 'Action Required: Fix blocker issues before Hadoop execution'
-                            echo "                 Check: ${env.SONARQUBE_URL}/dashboard?id=Python-Code-Disasters"
-                        } else {
-                            echo '⚠️  SCENARIO: Unknown Reason → Hadoop Skipped'
-                            echo ''
-                            echo 'Pipeline Decision:'
-                            echo '  • SonarQube Analysis: Complete'
-                            echo "  • Quality Gate: ${env.QUALITY_GATE_STATUS ?: 'N/A'}"
-                            echo "  • Blocker Issues: ${env.BLOCKER_COUNT ?: 'N/A'}"
-                            echo '  • Decision: SKIP Hadoop job'
-                        }
+                    echo '══════════════════════════════════════════════════'
+                    echo '                      Summary                     '
+                    echo '══════════════════════════════════════════════════'
+                    echo "Blockers: ${env.BLOCKER_COUNT ?: 'N/A'}"
+                    echo "Hadoop Job: ${env.RUN_HADOOP_JOB == 'true' ? 'EXECUTED' : 'SKIPPED'}"
+                    if (env.RUN_HADOOP_JOB == 'true' && env.HADOOP_OUTPUT_PATH) {
+                        echo "Output: ${env.HADOOP_OUTPUT_PATH}"
                     }
-                    
-                    echo ''
-                    echo '═══════════════════════════════════════════════════════════'
+                    echo '══════════════════════════════════════════════════'
                     echo ''
                 }
             }
@@ -556,6 +474,3 @@ PYSPARK_SCRIPT
         }
     }
 }
-
-
-

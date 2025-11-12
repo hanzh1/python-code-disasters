@@ -1,0 +1,19 @@
+# Example terraform.tfvars file
+# Copy this file to terraform.tfvars and fill in your values
+
+# Your GCP Project ID
+project_id = "your-gcp-project-id"
+
+# GCP Region (default: us-central1)
+region = "us-central1"
+
+# GCP Zone (default: us-central1-a)
+zone = "us-central1-a"
+
+# Your forked GitHub repository URL
+github_repo_url = "https://github.com/your-username/python-code-disasters"
+
+# GitHub webhook secret (generate a random string)
+github_webhook_secret = "your-secure-random-string-here"
+
+
