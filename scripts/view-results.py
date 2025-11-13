@@ -10,13 +10,11 @@ import re
 import subprocess
 import os
 
-# Colors for output
 GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'
 BLUE = '\033[0;34m'
-NC = '\033[0m'  # No Color
+NC = '\033[0m'
 
-# Get project ID from terraform.tfvars if available
 PROJECT_ID = None
 if os.path.exists('../terraform/terraform.tfvars'):
     with open('../terraform/terraform.tfvars', 'r') as f:
@@ -53,7 +51,6 @@ else:
             sys.exit(1)
         
         lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
-        # Filter to only directories (end with /)
         directories = [line for line in lines if line.endswith('/')]
         
         if not directories:
@@ -62,10 +59,9 @@ else:
                 print(line)
             sys.exit(1)
         
-        # Sort directories by name (timestamp format: YYYYMMDD_HHMMSS)
         directories.sort(reverse=True)
         latest = directories[0]
-        output_path = latest.rstrip('/')  # Remove trailing slash
+        output_path = latest.rstrip('/')
     except Exception as e:
         print(f"Error finding latest results: {e}")
         print(f"{YELLOW}Trying to list all available results:{NC}")
@@ -87,9 +83,8 @@ print("")
 print(f"{YELLOW}Line counts for all files:{NC}")
 print("")
 
-# Get all part files - need to quote the pattern to prevent shell expansion
+# Get all part files
 try:
-    # Use shell=True with proper quoting to handle the glob pattern
     cmd = f"gsutil ls '{output_path}/part-*'"
     result = subprocess.run(
         cmd,
@@ -99,7 +94,6 @@ try:
     )
     part_files = [line.strip() for line in result.stdout.strip().split('\n') if line.strip() and line.strip().endswith('part-') == False]
     if not part_files:
-        # Try listing the directory and filtering
         result = subprocess.run(
             ['gsutil', 'ls', output_path],
             capture_output=True,
@@ -109,7 +103,6 @@ try:
                      if line.strip() and 'part-' in line and not line.strip().endswith('/')]
 except Exception as e:
     print(f"Error listing part files: {e}")
-    # Fallback: list directory and filter
     try:
         result = subprocess.run(
             ['gsutil', 'ls', output_path],
@@ -141,7 +134,6 @@ for part_file in part_files:
                 count = int(match.group(2))
                 results.append((filename, count))
             else:
-                # Fallback: Try Python tuple format: ('filename.py', count)
                 match = re.match(r"^\('(.+)',\s*(\d+)\)$", line)
                 if match:
                     filename = match.group(1)
@@ -150,7 +142,6 @@ for part_file in part_files:
     except Exception as e:
         print(f"Error reading {part_file}: {e}")
 
-# Sort by count descending
 results.sort(key=lambda x: x[1], reverse=True)
 
 # Display formatted results

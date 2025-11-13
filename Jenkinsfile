@@ -27,7 +27,7 @@ pipeline {
                     def gcloudInstalled = sh(script: 'command -v gcloud || echo "not_found"', returnStdout: true).trim()
                     
                     if (gcloudInstalled == 'not_found') {
-                        echo 'Installing gcloud SDK (this may take a few minutes on first run)...'
+                        echo 'Installing gcloud SDK...'
                         sh '''
                             set -e
                             # Install to user directory if not root
@@ -51,9 +51,9 @@ pipeline {
                             gcloud version
                             gsutil version
                         '''
-                        echo '✓ gcloud SDK installed successfully'
+                        echo 'gcloud SDK installed successfully'
                     } else {
-                        echo '✓ gcloud SDK already installed'
+                        echo 'gcloud SDK already installed'
                         sh 'gcloud version'
                     }
                     
@@ -68,9 +68,9 @@ pipeline {
                         
                         # Authenticate using Application Default Credentials
                         if gcloud auth application-default print-access-token > /dev/null 2>&1; then
-                            echo "✓ GCP authenticated (Workload Identity)"
+                            echo "GCP authenticated (Workload Identity)"
                         else
-                            echo "⚠ GCP auth check failed (will retry when needed)"
+                            echo " GCP auth check failed (will retry when needed)"
                         fi
                     """
                 }
@@ -117,7 +117,7 @@ pipeline {
         stage('Wait for SonarQube Processing & Check Quality Gate') {
             steps {
                 script {
-                    echo '⏳ Processing analysis results...'
+                    echo 'Processing analysis results...'
                     
                     // Get the CE task ID from the report-task.txt file
                     def taskId = null
@@ -128,37 +128,30 @@ pipeline {
                         def taskIdMatch = (reportContent =~ /ceTaskId=([^\n]+)/)
                         if (taskIdMatch) {
                             taskId = taskIdMatch[0][1]
-                            echo "✓ Found SonarQube task ID: ${taskId}"
+                            echo "Found SonarQube task ID: ${taskId}"
                         }
                     } catch (Exception e) {
-                        echo "⚠ Could not read task ID from report file: ${e.message}"
+                        echo "Could not read task ID from report file: ${e.message}"
                     }
                     
-                    // Define blocker count variable
                     def blockerCount = 'UNKNOWN'
-                    
-                    // Use SONARQUBE_TOKEN environment variable for authentication
-                    // If token is not set, use admin:admin as fallback
                     def SONAR_AUTH = ""
                     
                     if (env.SONARQUBE_TOKEN && !env.SONARQUBE_TOKEN.isEmpty()) {
-                        // Use token for authentication (token can be used directly in API calls)
+                        // Use token for authentication
                         SONAR_AUTH = "${env.SONARQUBE_TOKEN}:"
                         echo "Using SONARQUBE_TOKEN for API authentication"
                     } else {
-                        // Fallback: use default admin credentials
                         SONAR_AUTH = "admin:admin"
                         echo "⚠ Using default admin credentials (token not set)"
                     }
                     
-                    // Store auth string for use in API calls
                     env.SONAR_AUTH = SONAR_AUTH
                     
-                    // Process SonarQube results (removed withCredentials wrapper)
-                    // Wait for SonarQube to finish processing
+                    // Process SonarQube results
                     def taskStatus = 'PENDING'
-                    def maxWaitTime = 300  // 5 minutes max wait
-                    def waitInterval = 10   // Check every 10 seconds
+                    def maxWaitTime = 300
+                    def waitInterval = 10
                     def totalWaitTime = 0
                     
                     if (taskId) {
@@ -185,33 +178,32 @@ pipeline {
                                     }
                                 }
                             } catch (Exception e) {
-                                echo "⚠ Error checking task status: ${e.message}"
+                                echo "Error checking task status: ${e.message}"
                             }
                         }
                         
                         if (taskStatus == 'SUCCESS') {
-                            echo "✓ Analysis processed"
+                            echo "Analysis processed"
                             sleep(time: 5, unit: 'SECONDS')
                         } else if (taskStatus == 'FAILED') {
-                            echo "✗ Analysis processing failed"
+                            echo "Analysis processing failed"
                             env.RUN_HADOOP_JOB = 'false'
                             env.BLOCKER_COUNT = 'ANALYSIS_FAILED'
                             return
                         }
                     } else {
-                        echo "⚠ Could not get task ID, waiting 60 seconds as fallback..."
+                        echo "Could not get task ID, waiting 60 seconds as fallback..."
                         sleep(time: 60, unit: 'SECONDS')
                     }
                     
-                    echo '📊 Checking Blocker Issues...'
+                    echo 'Checking Blocker Issues...'
                     
-                    // Check blocker count only (quality gate not used for decision)
+                    // Check blocker count
                     def maxRetries = 5
                     def retryDelay = 10
                     
                     for (int i = 0; i < maxRetries; i++) {
                         try {
-                            // Check blocker issues
                             def blockerResponse = sh(
                                 script: """
                                     curl -s -u ${SONAR_AUTH} \
@@ -226,7 +218,7 @@ pipeline {
                                     def blockerMatch = blockerResponse =~ /"total"\s*:\s*(\d+)/
                                     if (blockerMatch) {
                                         blockerCount = blockerMatch[0][1]
-                                        break  // Got valid response, exit loop
+                                        break
                                     }
                                 } catch (Exception e) {
                                     // Silent parse error
@@ -242,8 +234,6 @@ pipeline {
                             }
                         }
                     }
-                    
-                    // Store blocker count for reporting
                     env.BLOCKER_COUNT = blockerCount
                     
                     // Decision logic: Only run Hadoop if no blocker issues
@@ -253,15 +243,15 @@ pipeline {
                     echo '═══════════════════════════════════════════════════════════'
                     
                     if (blockerCount == 'UNKNOWN') {
-                        echo "⚠️  Blockers: ${blockerCount} (unknown)"
+                        echo "Blockers: ${blockerCount} (unknown)"
                         echo "   → SKIP Hadoop (incomplete data)"
                         env.RUN_HADOOP_JOB = 'false'
                     } else if (blockerCount != '0') {
-                        echo "✗ Blockers: ${blockerCount}"
+                        echo "Blockers: ${blockerCount}"
                         echo "   → SKIP Hadoop"
                         env.RUN_HADOOP_JOB = 'false'
                     } else {
-                        echo "✓ Blockers: ${blockerCount}"
+                        echo "Blockers: ${blockerCount}"
                         echo "   → RUN Hadoop"
                         env.RUN_HADOOP_JOB = 'true'
                     }
@@ -297,14 +287,13 @@ pipeline {
                         echo ""
                         echo "Uploading to ${REPO_GCS_PATH}..."
                         
-                        # Use gcloud storage instead of gsutil (better Workload Identity support)
                         echo "Removing existing files..."
                         gcloud storage rm -r ${REPO_GCS_PATH}/** 2>/dev/null || echo "No existing files to remove"
                         
                         echo "Uploading files..."
                         gcloud storage cp -r /tmp/repo-upload/* ${REPO_GCS_PATH}/
                         
-                        echo "✓ Code uploaded successfully"
+                        echo "Code uploaded successfully"
                         echo ""
                         echo "Uploaded files:"
                         gcloud storage ls ${REPO_GCS_PATH}/ --recursive | head -10
@@ -328,18 +317,7 @@ pipeline {
                     echo '══════════════════════════════════════════════════'
                     echo ''
                     
-                    sh """
-                        echo "📊 Job Configuration:"
-                        echo "   - Cluster: ${HADOOP_CLUSTER_NAME}"
-                        echo "   - Region: ${HADOOP_REGION}"
-                        echo "   - Project: ${GCP_PROJECT_ID}"
-                        echo "   - Job: Line Counter (PySpark)"
-                        echo "   - Input: ${REPO_GCS_PATH}"
-                        echo "   - Output: ${outputPath}"
-                        echo ""
-                        echo "🚀 Submitting job to Dataproc..."
-                        echo ""
-                        
+                    sh """                        
                         cat > /tmp/line_counter_job.py << 'PYSPARK_SCRIPT'
 from pyspark import SparkContext
 import sys
@@ -413,10 +391,9 @@ PYSPARK_SCRIPT
                     echo ''
                     
                     sh """
-                        echo "📈 Line counts for Python files:"
+                        echo "Line counts for Python files:"
                         echo ""
                         
-                        # Fetch and display results using gcloud storage
                         gcloud storage cat ${HADOOP_OUTPUT_PATH}/part-* 2>/dev/null || echo "Processing results..."
                         
                         echo ""

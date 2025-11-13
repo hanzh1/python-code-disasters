@@ -1,6 +1,5 @@
 #!/bin/bash
 # Complete deployment script
-# This script automates the entire deployment process
 
 set -e
 
@@ -49,14 +48,13 @@ ZONE="${GCP_ZONE:-us-central1-a}"
 REGION="${GCP_REGION:-us-central1}"
 CLUSTER_NAME="jenkins-sonarqube-cluster"
 
-echo "📋 Configuration:"
+echo "Configuration:"
 echo "   Project: $PROJECT_ID"
 echo "   Zone: $ZONE"
 echo "   Region: $REGION"
 echo "   Cluster: $CLUSTER_NAME"
 echo ""
 
-# Step 1: Authenticate with GCP
 echo "Step 1: Authenticating with GCP..."
 echo "────────────────────────────────────────────────────────────"
 if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q .; then
@@ -66,14 +64,12 @@ if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q
 fi
 print_success "GCP authentication verified"
 
-# Step 2: Set project
 echo ""
 echo "Step 2: Setting GCP project..."
 echo "────────────────────────────────────────────────────────────"
 gcloud config set project $PROJECT_ID
 print_success "Project set to $PROJECT_ID"
 
-# Step 3: Enable required APIs
 echo ""
 echo "Step 3: Enabling required GCP APIs..."
 echo "────────────────────────────────────────────────────────────"
@@ -94,7 +90,6 @@ for API in "${APIS[@]}"; do
     fi
 done
 
-# Step 4: Deploy with Terraform
 echo ""
 echo "Step 4: Deploying infrastructure with Terraform..."
 echo "────────────────────────────────────────────────────────────"
@@ -123,7 +118,6 @@ print_info "Applying Terraform configuration..."
 terraform apply tfplan
 print_success "Terraform deployment completed"
 
-# Step 5: Configure kubectl
 echo ""
 echo "Step 5: Configuring kubectl..."
 echo "────────────────────────────────────────────────────────────"
@@ -132,7 +126,7 @@ gcloud container clusters get-credentials $CLUSTER_NAME \
     --project $PROJECT_ID
 print_success "kubectl configured"
 
-# Step 6: Wait for services
+
 echo ""
 echo "Step 6: Waiting for services to be ready..."
 echo "────────────────────────────────────────────────────────────"
@@ -150,7 +144,6 @@ else
     print_warning "SonarQube may need more time (check with: kubectl get pods -n sonarqube)"
 fi
 
-# Step 7: Wait for LoadBalancer IPs
 echo ""
 echo "Step 7: Waiting for LoadBalancer IPs..."
 echo "────────────────────────────────────────────────────────────"
@@ -186,7 +179,6 @@ if [ -z "$SONARQUBE_IP" ]; then
     print_warning "SonarQube LoadBalancer IP not assigned yet (check later with: kubectl get svc -n sonarqube)"
 fi
 
-# Step 8: Display service URLs
 echo ""
 echo "========================================="
 echo "Service URLs"
@@ -204,19 +196,7 @@ else
     echo "SonarQube: (IP not assigned yet)"
 fi
 
-# Step 9: Run automated setup
-echo ""
-echo "========================================="
-echo "Next Steps"
-echo "========================================="
-echo ""
-echo "1. Wait 2-5 minutes for services to fully start"
-echo ""
-echo "2. Token is already configured in Terraform (no manual steps needed)"
-echo ""
-echo "3. Configure Jenkins pipeline job (one-time manual step)"
-echo ""
-echo "4. (Optional) Configure GitHub webhook:"
+
 if [ -n "$JENKINS_IP" ]; then
     echo "   URL: http://${JENKINS_IP}:8080/github-webhook/"
 fi
