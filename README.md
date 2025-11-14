@@ -1,5 +1,8 @@
 # Python Code Disasters - CI/CD Pipeline
 
+### [Demo Code Walk through](https://drive.google.com/file/d/1l9UTBl8mJLmDBrASdb0KzCdB6l9vTrrw/view?usp=drive_link)
+### [Demo Functionality](https://drive.google.com/file/d/1eQSQlrhn3_Czjlo3_KCQQHAMmQ59SeTE/view?usp=sharing)
+
 This project implements a CI/CD pipeline using Jenkins, SonarQube, and Hadoop MapReduce on Google Cloud Platform. The pipeline automatically analyzes code quality and, if no blocker issues are found, runs a Hadoop job to count lines in all repository files.
 
 ## Prerequisites
