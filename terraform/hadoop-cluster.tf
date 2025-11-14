@@ -92,9 +92,7 @@ resource "google_storage_bucket_object" "init_script" {
 resource "google_storage_bucket_object" "mapreduce_job" {
   name   = "jobs/line_counter.py"
   bucket = google_storage_bucket.dataproc_staging.name
-  source = "${path.module}/../hadoop-jobs/line_counter.py"
-  
-  depends_on = [google_storage_bucket.dataproc_staging]
+  source = "${path.module}/../python-code-disasters/hadoop-jobs/line_counter.py"
 }
 
 # Service account for Hadoop cluster

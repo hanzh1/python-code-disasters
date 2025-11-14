@@ -8,34 +8,6 @@ resource "kubernetes_namespace" "jenkins" {
   depends_on = [google_container_node_pool.jenkins_sonarqube_nodes]
 }
 
-# ConfigMap for Jenkins plugins list
-resource "kubernetes_config_map" "jenkins_plugins" {
-  metadata {
-    name      = "jenkins-plugins"
-    namespace = kubernetes_namespace.jenkins.metadata[0].name
-  }
-
-  data = {
-    "plugins.txt" = file("${path.module}/../scripts/plugins.txt")
-  }
-
-  depends_on = [kubernetes_namespace.jenkins]
-}
-
-# ConfigMap for Jenkins initialization scripts
-resource "kubernetes_config_map" "jenkins_init_scripts" {
-  metadata {
-    name      = "jenkins-init-scripts"
-    namespace = kubernetes_namespace.jenkins.metadata[0].name
-  }
-
-  data = {
-    "01-configure-sonarqube.groovy" = file("${path.module}/../scripts/jenkins-init-sonarqube.groovy")
-  }
-
-  depends_on = [kubernetes_namespace.jenkins]
-}
-
 # Jenkins PersistentVolumeClaim
 resource "kubernetes_persistent_volume_claim" "jenkins_pvc" {
   wait_until_bound = false
@@ -91,32 +63,6 @@ resource "kubernetes_deployment" "jenkins" {
 
       spec {
         service_account_name = kubernetes_service_account.jenkins_sa.metadata[0].name
-
-        # Fix DNS resolution for GitHub
-        host_aliases {
-          ip        = "140.82.121.3"
-          hostnames = ["github.com"]
-        }
-        host_aliases {
-          ip        = "140.82.112.3"
-          hostnames = ["github.com"]
-        }
-        
-        # Fix DNS resolution for SonarSource binaries
-        host_aliases {
-          ip        = "13.227.74.109"
-          hostnames = ["binaries.sonarsource.com"]
-        }
-        host_aliases {
-          ip        = "13.227.74.28"
-          hostnames = ["binaries.sonarsource.com"]
-        }
-        
-        # Fix DNS resolution for SonarQube service
-        host_aliases {
-          ip        = "34.118.238.107"
-          hostnames = ["sonarqube-service", "sonarqube-service.sonarqube", "sonarqube-service.sonarqube.svc.cluster.local"]
-        }
 
         security_context {
           fs_group = 1000
@@ -176,16 +122,6 @@ resource "kubernetes_deployment" "jenkins" {
             value = google_storage_bucket.dataproc_staging.name
           }
 
-          env {
-            name  = "GITHUB_REPO_URL"
-            value = var.github_repo_url
-          }
-
-          env {
-            name  = "SONARQUBE_TOKEN"
-            value = "squ_81d4e790a00037c5f4479ba65f456992d23d9bdd"  # SonarQube API token for Jenkins
-          }
-
           resources {
             limits = {
               memory = "2Gi"
@@ -200,17 +136,6 @@ resource "kubernetes_deployment" "jenkins" {
           volume_mount {
             name       = "jenkins-home"
             mount_path = "/var/jenkins_home"
-          }
-
-          volume_mount {
-            name       = "init-scripts"
-            mount_path = "/usr/share/jenkins/ref/init.groovy.d"
-          }
-
-          volume_mount {
-            name       = "plugins"
-            mount_path = "/usr/share/jenkins/ref/plugins.txt"
-            sub_path   = "plugins.txt"
           }
 
           liveness_probe {
@@ -240,20 +165,6 @@ resource "kubernetes_deployment" "jenkins" {
           name = "jenkins-home"
           persistent_volume_claim {
             claim_name = kubernetes_persistent_volume_claim.jenkins_pvc.metadata[0].name
-          }
-        }
-
-        volume {
-          name = "init-scripts"
-          config_map {
-            name = kubernetes_config_map.jenkins_init_scripts.metadata[0].name
-          }
-        }
-
-        volume {
-          name = "plugins"
-          config_map {
-            name = kubernetes_config_map.jenkins_plugins.metadata[0].name
           }
         }
       }
