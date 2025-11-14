@@ -2,8 +2,10 @@
 
 Team Member: Hanzhi Zhu, Roxy He
 
-### [Demo Code Walk through](https://drive.google.com/file/d/1eQSQlrhn3_Czjlo3_KCQQHAMmQ59SeTE/view?usp=sharing)
-### [Demo Functionality](https://drive.google.com/file/d/1SETvliIZN7H9ZQPLM50SaF0w4Y7woB7V/view?usp=sharing)
+### [Demo Code Walk through - Part1](https://drive.google.com/file/d/1sRx3pMWsUQUNdoT_w0dmPTRamGCvlRcc/view?usp=sharing)
+### [Demo Code Walk through - Part2](https://drive.google.com/file/d/1KiZFaHs2H0FUM31aRJ9Zzxnay14aTUi7/view?usp=sharing)
+### [Demo Functionality - Resources Creation](https://drive.google.com/file/d/1eQSQlrhn3_Czjlo3_KCQQHAMmQ59SeTE/view?usp=sharing)
+### [Demo Functionality - Application](https://drive.google.com/file/d/1SETvliIZN7H9ZQPLM50SaF0w4Y7woB7V/view?usp=sharing)
 
 This project implements a CI/CD pipeline using Jenkins, SonarQube, and Hadoop MapReduce on Google Cloud Platform. The pipeline automatically analyzes code quality and, if no blocker issues are found, runs a Hadoop job to count lines in all repository files.
 
