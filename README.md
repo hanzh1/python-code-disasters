@@ -29,7 +29,7 @@ Edit `terraform.tfvars` with your values:
 project_id = "your-gcp-project-id"
 region = "us-central1"
 zone = "us-central1-a"
-github_repo_url = "https://github.com/your-username/python-code-disasters"
+github_repo_url = "https://github.com/hanzh1/python-code-disasters"
 github_webhook_secret = "your-secure-random-string-here"
 ```
 
