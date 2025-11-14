@@ -1,5 +1,7 @@
 # Python Code Disasters - CI/CD Pipeline
 
+Team Member: Hanzhi Zhu, Roxy He
+
 ### [Demo Code Walk through](https://drive.google.com/file/d/1eQSQlrhn3_Czjlo3_KCQQHAMmQ59SeTE/view?usp=sharing)
 ### [Demo Functionality](https://drive.google.com/file/d/1SETvliIZN7H9ZQPLM50SaF0w4Y7woB7V/view?usp=sharing)
 
